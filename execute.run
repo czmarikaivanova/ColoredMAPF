@@ -1,0 +1,265 @@
+option solver "/home/marika/software/AMPL/cplex";	# path to used solver (cplex)
+option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution process
+option eexit -99999; 					# supress bailing after xxx warnings
+
+set FILENAMES := {"empty-16-16.map" , "random-32-32-20.map"};#, "random-64-64-20.map", "room-32-32-4.map", "warehouse-10-20-10-2-1.map"};
+
+set INSTANCES{FILENAMES};
+let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-1.scen","empty-16-16-random-2.scen","empty-16-16-random-3.scen","empty-16-16-random-4.scen","empty-16-16-random-5.scen"};
+
+let INSTANCES["random-32-32-20.map"] := {"random-32-32-20-random-1.scen","random-32-32-20-random-2.scen","random-32-32-20-random-3.scen","random-32-32-20-random-4.scen","random-32-32-20-random-5.scen"};
+
+#let INSTANCES["random-64-64-20.map"] := {"random-64-64-20-random-1.scen","random-64-64-20-random-2.scen","random-64-64-20-random-3.scen","random-64-64-20-random-4.scen","random-64-64-20-random-5.scen"};
+#
+#let INSTANCES["room-32-32-4.map"] := {"room-32-32-4-random-1.scen","room-32-32-4-random-2.scen","room-32-32-4-random-3.scen","room-32-32-4-random-4.scen","room-32-32-4-random-5.scen"};
+#
+#let INSTANCES["warehouse-10-20-10-2-1.map"] := {"warehouse-10-20-10-2-1-random-1.scen","warehouse-10-20-10-2-1-random-2.scen","warehouse-10-20-10-2-1-random-3.scen","warehouse-10-20-10-2-1-random-4.scen","warehouse-10-20-10-2-1-random-5.scen"};
+
+set KS := {1,5, 10};
+
+
+param height;
+param width;
+param map{0..height-1, 0..width-1} binary;
+param maxAgentsInInstance;
+param allagents{0..maxAgentsInInstance-1};
+param allgoals{0..maxAgentsInInstance-1};
+param maxAgents default 20;
+param sx;
+param sy;
+param gx;
+param gy;
+
+param tlim default 3600;	# time limit for the solver
+param iterCnt default 0;	# number of iteration in matching ub algorithm
+param currTlim default 3600;	# cummulate _solve_elapsed_time for each iteration of decision model
+param ubLimit default 10000;
+param line;
+param objlog symbolic := "./logs/objlog.txt";	# objective function value log file
+param timelog symbolic := "./logs/timelog.txt"; # _solve_elapsed_time log file
+
+
+model "models/CMAPF-node-maxcaptured.mod";
+param cardsA{i in 0..k-1};
+param v1;
+param v2;
+param aj;
+param gj;
+
+printf 's\t',ctime() >> (objlog);
+printf 's\t',ctime() >> (timelog);
+
+for {fname in FILENAMES} {
+	reset data V,E,Agents, Teams, Goals, map;
+	read height< (fname);
+	read width < (fname);
+	let V := {};
+	for {i in 0..height-1} {
+		for {j in 0..width-1} {
+			read map[i,j] < (fname);
+			if map[i,j] = 0 then let V := V union {i * width + j}; # create node only if point in map is 0 
+		}
+	}
+	let E := {};
+	for {i in 0..height-2} {
+		for {j in 0..width-2} {
+			if map[i,j] = 0 then {
+				if map[i+1,j] = 0 then {
+					let E := E union {(i * width+j,(i+1)*width+j)};		
+				}
+				if map[i,j+1] = 0 then {
+					let E := E union {(i * width+j,i*width+j+1)};		
+				}
+			}
+		}
+	}
+	for {instname in INSTANCES[fname]} {
+		read maxAgentsInInstance < (instname);
+		reset data allagents;
+		for {i in 0..maxAgentsInInstance-1 }{
+				read sx, sy, gx, gy < (instname);
+				let allagents[i] := sy * width + sx;
+				let allgoals[i] := gy * width + gx;
+		}
+		for {teamCount in KS} {
+			let k := teamCount;
+			reset data Teams;
+			reset data Goals;
+			display k;
+			for {j in 0..k-1} {
+				let Teams[j] := {allagents[j]};
+				let Goals[j] := {allgoals[j]};
+			}
+			for {j in k..maxAgents-1} {
+				let Teams[j mod k] := Teams[j mod k] union {allagents[j]};
+				let Goals[j mod k] := Goals[j mod k] union {allgoals[j]};
+				
+
+#				printf '------------------------\n';
+#				printf 'model: max informed, integrality relaxed: %d\n', (if integerFlag=0 then 1 else 0);
+#				printf '------------------------\n';
+#				let currTlim := tlim;
+#				for {i in lb+1..ubLimit} {						# iterate from lower to upper bound
+#					display lb;
+#					display i;
+#				        let ub := i;
+#					option relax_integrality (if integerFlag = 0 then 1 else 0);	# set if ip or lp
+#					option cplex_options ('timelimit ' & currTlim);			# set time limit for the following solve command
+#					#option cplex_options ('absmipgap 0 lowercutoff ' & j);
+#		
+#				        solve;
+#					
+#					let currTlim := currTlim - _solve_time;
+#					#option show_stats 1; 
+#					
+#				        if solve_result = 'solved' then { 	# a solution is found
+#						# if a solution is found, but objective is not n-s, then the solution is in fact infeasible!
+#						if round(maxCaptured,2) = card(Agents) then {
+#							printf '%4.2f\t', tlim - currTlim >> (timelog);
+#							printf '%2.0f\t', i >> (objlog);
+#				        	        printf 'optimal solution found, k goals captured. Makespan: %d\n',i;
+#							display x;
+#		#					if integerFlag = 0 then let lb := round(maxCaptured,2)-1;
+#				        	        break;
+#						}
+#				        }
+#					if solve_result = 'infeasible' then {	# the instance has no feasible solution
+#						if i = ubLimit-1 then {		# if we are in the last iteration before the upper bound, the solution is indeed the ub.
+#							printf '%4.2f\t',  tlim - currTlim  >> (timelog);
+#							printf '%2.0f\t', ub >> (objlog);
+#							printf 'infeasible solution for iteration %d, but upper bound %d can now be used',i,ub;
+#				                	break;
+#						}
+#						else {
+#				        		printf 'infeasible for deadline k = %d\n',i;
+#						}
+#					}
+#					# if we got here, it means that we exceeded the time limit without finding the solution
+#					 if solve_result = 'limit' or currTlim < 0 then {
+#						printf '%4.2f\t',  tlim - currTlim  >> (timelog);
+#						printf '%2.0f\t', i >> (objlog);
+#				                printf 'time limit exceeded. best value found (lb): %d\n',i;
+#				                break;
+#				        }
+#				}
+#
+#
+#				display Teams;
+#				display Goals;
+			}
+			display Teams;
+				display Goals;
+
+
+		}
+	}
+}
+
+#	printf 'filename: %s\n', fname; 
+#	printf '========================\n';
+#        printf '%s\t', fname >> (objlog);
+#        printf '%s\t', fname >> (timelog);
+#
+#	# startof loading data --------------------------------------
+#	let V := {};
+#	let E := {};
+#	read cardV, cardE, k, {i in 0 .. k-1 } cardsA[i] < (fname);
+#	for{i in 1..cardV} {
+#		read v1 < (fname);  	# read an edge from a textfile
+#		let V := V union {v1};
+#	}
+#	display cardV;
+#	display cardsA;
+#	display V;
+#	for{i in 1..cardE} {
+#		read v1,v2 < (fname);  	# read an edge from a textfile
+#		let E := E union {(min(v1,v2),max(v1,v2))};
+#	}
+#	display E;
+#	for {i in 0 .. k-1} {
+#		let Teams[i] := {};
+#		for {j in  0 .. cardsA[i] - 1} {
+#			read aj < (fname);
+#			let Teams[i] := Teams[i] union {aj};
+#		}
+#		let Goals[i] := {};
+#		for {j in  0 .. cardsA[i] - 1} {
+#			read gj < (fname);
+#			let Goals[i] := Goals[i] union {gj};
+#		}
+#	}
+#	display V;
+#	display E;
+#	display Agents;
+#	display Teams;
+#	display Goals;
+#	
+#	# end of loading data --------------------------------------
+#
+#	#printf '------------------------\n';
+#	#printf 'model: min time\n';
+#	#printf '------------------------\n';
+#	##option cplex_options ('timelimit ' & tlim);	# set time limit for the following solve command
+#	#solve;
+#	#printf '%d\t',ceil(minTime) >> (objlog);
+#	#printf '%4.2f\t', _solve_time  >> (timelog);
+#	#
+#        #display solve_result;
+#	# Start of iterative procedure --------------------------------------	
+#	for {integerFlag in 1..1} {				# this model is once solved as a lp relaxation (for finding lower bound) and then as an ip
+#		if integerFlag = 1 then {
+#			drop VInoMoveIfNoNeigh
+#		}
+#		printf '------------------------\n';
+#		printf 'model: max informed, integrality relaxed: %d\n', (if integerFlag=0 then 1 else 0);
+#		printf '------------------------\n';
+#		let currTlim := tlim;
+#		for {i in lb+1..ubLimit} {						# iterate from lower to upper bound
+#			display lb;
+#			display i;
+#		        let ub := i;
+#			option relax_integrality (if integerFlag = 0 then 1 else 0);	# set if ip or lp
+#			option cplex_options ('timelimit ' & currTlim);		# set time limit for the following solve command
+#			#option cplex_options ('absmipgap 0 lowercutoff ' & j);
+#
+#		        solve;
+#			
+#			let currTlim := currTlim - _solve_time;
+#			#option show_stats 1; 
+#			
+#		        if solve_result = 'solved' then { 	# a solution is found
+#				# if a solution is found, but objective is not n-s, then the solution is in fact infeasible!
+#				if round(maxCaptured,2) = card(Agents) then {
+#					printf '%4.2f\t', tlim - currTlim >> (timelog);
+#					printf '%2.0f\t', i >> (objlog);
+#		        	        printf 'optimal solution found, k goals captured. Makespan: %d\n',i;
+#					display x;
+##					if integerFlag = 0 then let lb := round(maxCaptured,2)-1;
+#		        	        break;
+#				}
+#		        }
+#			if solve_result = 'infeasible' then {	# the instance has no feasible solution
+#				if i = ubLimit-1 then {		# if we are in the last iteration before the upper bound, the solution is indeed the ub.
+#					printf '%4.2f\t',  tlim - currTlim  >> (timelog);
+#					printf '%2.0f\t', ub >> (objlog);
+#					printf 'infeasible solution for iteration %d, but upper bound %d can now be used',i,ub;
+#		                	break;
+#				}
+#				else {
+#		        		printf 'infeasible for deadline k = %d\n',i;
+#				}
+#			}
+#			# if we got here, it means that we exceeded the time limit without finding the solution
+#			 if solve_result = 'limit' or currTlim < 0 then {
+#				printf '%4.2f\t',  tlim - currTlim  >> (timelog);
+#				printf '%2.0f\t', i >> (objlog);
+#		                printf 'time limit exceeded. best value found (lb): %d\n',i;
+#		                break;
+#		        }
+#		}
+#	}
+#}
+#
+#printf '\n' >> (timelog);
+#printf '\n' >> (objlog);
+#
