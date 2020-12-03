@@ -1,0 +1,209 @@
+option solver "/home/marika/software/AMPL/cplex";	# path to used solver (cplex)
+option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution processFlow
+option eexit -99999; 					# supress bailing after xxx warnings
+
+set FILENAMES := {"empty-16-16.map"};# , "random-32-32-20.map"};#, "random-64-64-20.map", "room-32-32-4.map", "warehouse-10-20-10-2-1.map"};
+
+#set FILENAMES := {"test.map"};
+set INSTANCES{FILENAMES};
+#let INSTANCES["test.map"] := {"test.scen"};
+let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-1.scen"};#,"empty-16-16-random-2.scen","empty-16-16-random-3.scen","empty-16-16-random-4.scen","empty-16-16-random-5.scen"};
+#let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-4.scen"};#,"empty-16-16-random-5.scen"};
+
+#let INSTANCES["random-32-32-20.map"] := {"random-32-32-20-random-1.scen","random-32-32-20-random-2.scen","random-32-32-20-random-3.scen","random-32-32-20-random-4.scen","random-32-32-20-random-5.scen"};
+
+#let INSTANCES["random-64-64-20.map"] := {"random-64-64-20-random-1.scen","random-64-64-20-random-2.scen","random-64-64-20-random-3.scen","random-64-64-20-random-4.scen","random-64-64-20-random-5.scen"};
+#
+#let INSTANCES["room-32-32-4.map"] := {"room-32-32-4-random-1.scen","room-32-32-4-random-2.scen","room-32-32-4-random-3.scen","room-32-32-4-random-4.scen","room-32-32-4-random-5.scen"};
+#
+#let INSTANCES["warehouse-10-20-10-2-1.map"] := {"warehouse-10-20-10-2-1-random-1.scen","warehouse-10-20-10-2-1-random-2.scen","warehouse-10-20-10-2-1-random-3.scen","warehouse-10-20-10-2-1-random-4.scen","warehouse-10-20-10-2-1-random-5.scen"};
+
+#set KS := {1,5, 10};
+set KS := {5};
+
+
+param height;
+param width;
+param map{0..height-1, 0..width-1} integer;
+param maxAgentsInInstance;
+param allagents{0..maxAgentsInInstance-1};
+param allgoals{0..maxAgentsInInstance-1};
+param sx;
+param sy;
+param gx;
+param gy;
+param tlim default 600;		# time limit for the solver
+param iterCnt default 0;	# number of iteration in matching ub algorithm
+param currTlim default 3600;	# cummulate _solve_elapsed_time for each iteration of decision model
+param objlog symbolic := "./logs/objlog.txt";	# objective function value log file
+param timelog symbolic := "./logs/timelog.txt"; # _solve_elapsed_time log file
+
+
+model "models/CMAPF-mcfp.mod";
+set ProcessedE within Arcs default {};
+
+printf 's\t',ctime() >> (objlog);
+printf 's\t',ctime() >> (timelog);
+
+for {fname in FILENAMES} {
+	reset data V,E,Agents, Teams, Goals, map;
+	read height< (fname);
+	read width < (fname);
+	let V := {};
+	for {i in 0..height-1} {
+		for {j in 0..width-1} {
+			read map[i,j] < (fname);
+			if map[i,j] > 0 then let map[i,j] := -1; # if there is an obstacle, put -1
+			if map[i,j] = 0 then {
+				let map[i,j] := card(V);         # if there is a node set to the node ID
+				let V := V union {card(V)};      # insert new node to V
+			}
+		}
+	}
+	display height;
+	display width;
+	display map;
+	let E := {};
+	for {i in 0..height-1} {
+		for {j in 0..width-1} {
+			if map[i,j] >= 0  then { # if there is a node
+				if j < width - 1 then {			# if there is an adjacent node
+					if map[i,j+1] >= 0 then {
+						let E := E union {(map[i,j],map[i,j+1])};		
+					}
+				}
+				if i < height - 1 then {
+					if map[i+1,j] >= 0  then { 	# if there is an adjacent node
+						let E := E union {(map[i,j],map[i+1,j])};		
+					}
+				}
+			}
+		}
+	}
+	let cardV := card(V);
+	let cardE := card(E);
+	display V;
+	display E;
+	display Arcs;
+
+	for {instname in INSTANCES[fname]} {
+		read maxAgentsInInstance < (instname);
+		reset data allagents;
+		for {i in 0..maxAgentsInInstance-1 }{ 			# store all agents and goals that possibly will be in this instance
+				read sx, sy, gx, gy < (instname);
+				let allagents[i] := map[sy,sx];
+				let allgoals[i] := map[gy,gx];
+				printf "Adding agent: %d at %d %d\n",map[sy,sx], sy, sx;
+				printf "Adding goal: %d at %d %d\n",map[gy,gx], gy,gx;
+		}
+		for {teamCount in KS} {
+			let k := teamCount;
+			reset data Teams;
+			reset data Goals;
+
+			for {j in 0..k-1} {				# initially put one agent into each team
+				let Teams[j] := {};
+				let Goals[j] := {};
+			}
+			for {agentCount in 0..maxAgentsInInstance-1 by k} {
+				printf '###################################################################\n';
+				printf '                       model: max informed\n';
+				printf '####################################################################\n';
+				for {i in 0..k-1} {
+					let Teams[i] := Teams[i] union {allagents[agentCount + i]};
+					let Goals[i] := Goals[i] union {allgoals[agentCount + i]};
+					
+				}
+				display Teams;
+				display Goals;
+				let Reachable[0] := Agents;
+				let ReachableR[0] := union {c in 0..k-1} Goals[c];
+				let ReachV[0] := {};
+				let ReachE[0] := {};
+				for {j in 1..ubLimit} {
+					let Reachable[j] := {};
+					let ReachableR[j] := {};
+					let ReachV[j] := {};
+					let ReachE[j] := {};
+				}
+				let currTlim := tlim;
+				for {i in lb..ubLimit} {						# iterate from lower to upper bound
+				        let ub := i;
+					printf "Current iteration: %d\nTime limit: %d\n",i,currTlim;
+					let Reachable[ub] := Reachable[ub-1];
+					let ReachableR[ub] := ReachableR[ub-1];
+					for {u in Reachable[ub-1]} { # bottom up
+						let Reachable[ub]:= Reachable[ub] union N[u];
+					}	
+					for {u in ReachableR[ub-1]} { # up bottom
+						let ReachableR[ub]:= ReachableR[ub] union N[u];
+					}	
+					for {jj in 0..ub} { # intersect both directions
+						let ReachV[jj] := Reachable[jj] intersect ReachableR[ub-jj];
+					}	
+
+					for {ii in 0..k-1} {
+						for {jj in 1..ub} { # construct ReachE
+							for {u in ReachV[jj-1]} {
+								for {v in ReachV[jj]} {
+									if (u,v) in Arcs then {
+										let ReachE[jj] := ReachE[jj] union {(u,v)};
+									}
+								}
+							}
+						}	
+					}
+					if card(ReachV[ub]) < card(union {c in 0..k-1}Goals[c]) then { # if no proper intersection empty both ReachV and ReachE
+						printf "empty intersection, time limit %d is insufficient.",ub;
+						for {jj in 0..ub} { # TODO: is it necessary to clear??
+							let ReachV[jj] := {};
+							let ReachE[jj] := {};
+						}
+						continue;
+					}
+					
+					option cplex_options ('timelimit ' & currTlim);			# set time limit for the following solve command
+					option cplex_options 'lowercutoff 10';
+					option cplex_options 'absmipgap 0.9999999';
+					#option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution processFlow
+					printf "------------------------- SOLVING :";
+					display ub;
+				        solve;
+					printf "------------------------- DONE:     ";
+					
+					let currTlim := currTlim - _solve_elapsed_time;
+					
+				        if solve_result = 'solved' then { 	# a solution is found
+						# if a solution is found, but objective is not n-s, then the solution is in fact infeasible!
+					#	if round(maxFlow,2) = card(Agents) then {
+						if round(maxFlow,2) = card(Agents) then {
+							printf ' %s\t%d\t %d, %4.2f\t %4.2f\t\n',instname, teamCount, card(union{c in 0..k-1}Teams[c]), tlim - currTlim, _ampl_elapsed_time  >> (timelog);
+							printf ' %s\t%d\t %d, %2.0f\n', instname, teamCount, card(union{c in 0..k-1}Teams[c]), ub >> (objlog);
+
+				        	        printf 'optimal solution found, k goals captured. Makespan: %d\n',i;
+				        	        break;
+						}
+				        }
+					if solve_result = 'infeasible' then {	# the instance has no feasible solution
+						if i = ubLimit-1 then {		# if we are in the last iteration before the upper bound, the solution is indeed the ub.
+							printf 'K: %d, Agents: %d, %4.2f\t', teamCount, card(union{c in 0..k-1}Teams[c]), tlim - currTlim  >> (timelog);
+							printf 'K: %d, Agents: %d, %2.0f\t', teamCount, card(union{c in 0..k-1}Teams[c]),  ub >> (objlog);
+							printf 'infeasible solution for iteration %d, but upper bound %d can now be used',i,ub;
+				                	break;
+						}
+						else {
+				        		printf 'infeasible for deadline k = %d\n',i;
+						}
+					}
+					# if we got here, it means that we exceeded the time limit without finding the solution
+					 if solve_result = 'limit' or currTlim < 0 then {
+						printf '%4.2f\t',  tlim - currTlim  >> (timelog);
+						printf '%2.0f\t', i >> (objlog);
+				                printf 'time limit exceeded. best value found (lb): %d\n',i;
+				                break;
+				        }
+				}
+			}
+		}
+	}
+}
