@@ -4,7 +4,7 @@ param cardE; 			# Number of edges
 param k default 1;			# Number of teams 
 param lb default 1;
 param ub default 2;
-param ubLimit default 25;
+param ubLimit default 100;
 
 # Sets:
 set V;
@@ -14,49 +14,59 @@ set N{i in V} within V = {j in V: (i,j) in E || (j,i) in E}; 	# N[i] is a set of
 set Teams{i in 0..k-1};
 set Goals{i in 0..k-1};
 set Agents := union {i in 0..k-1} Teams[i]; 
-set Reachable { 0..ubLimit} within V;
-set ReachableR {0..ubLimit} within V;
-set ReachV {0..ubLimit} within V;
-set ReachE {0..ubLimit} within Arcs;
+
+set Reachable {0..k-1, 0..ubLimit} within V;   
+set ReachableR {0..k-1, 0..ubLimit} within V; 
+set ReachV {0..k-1, 0..ubLimit} within V;   
+set ReachE {0..k-1, 0..ubLimit} within Arcs;
+
+
 set Pos = {1..5};
 
 # Variables:
-var fv{v in V, t in 0..ub, c in 0..k-1} binary;		# unit flow of commodity c passes through e
-var fe{(u,v) in E, t in 1..ub, c in 0..k-1, p in Pos} binary;		# unit flow of commodity c passes through e
+var fv{t in 0..ub, c in 0..k-1, v in V} binary;		# unit flow of commodity c passes through e
+#var fe{ t in 1..ub, c in 0..k-1, p in Pos, (u,v) in E: u in ReachV[c,t-1] and u in ReachV[c,t] and v in ReachV[c,t-1] and v in ReachV[c,t]} binary;		# unit flow of commodity c passes through e
+var fe{ t in 1..ub, c in 0..k-1, p in Pos, (u,v) in E} binary;		# unit flow of commodity c passes through e
 
 # Objective function:
-maximize maxFlow: sum{c in 0..k-1, g in Goals[c]} fv[g,ub,c];
+maximize maxFlow: sum{c in 0..k-1, g in Goals[c]} fv[ub,c,g];
 #maximize maxFlow: sum{c in 0..k-1, g in Goals[c]} w[g];
 
 # Constraints:
 
 # Initial flow
 subject to flowConsS1{c in 0..k-1, u in Teams[c]}:
-	fv[u,0,c] = 1;
+	fv[0,c,u] = 1;
 		
 subject to flowConsS2{c in 0..k-1, u in V: u not in Teams[c]}:
-	fv[u,0,c] = 0;
+	fv[0,c,u] = 0;
 
 subject to flowConsG1{c in 0..k-1, u in Goals[c]}:
-	fv[u,ub,c] = 1;
+	fv[ub,c,u] = 1;
 
 subject to flowConsG2{c in 0..k-1, u in V: u not in Goals[c]}:
-	fv[u,ub,c] = 0;
+	fv[ub,c,u] = 0;
 
-subject to flowConsV12{u in V, t in 1..ub,c in 0..k-1}:
-	fv[u,t-1,c] = (sum{v in N[u]: u < v} fe[u,v,t,c,1]) + (sum{v in N[u]: v < u} fe[v,u,t,c,2]);
+subject to flowConsV12{t in 1..ub,c in 0..k-1, u in V}:
+	fv[t-1,c,u] = (sum{v in N[u]: u < v} fe[t,c,1,u,v]) + (sum{v in N[u]: v < u } fe[t,c,2,v,u]);
 
-subject to flowConsV3{(u,v) in E, t in 1..ub,c in 0..k-1}:
-	fe[u,v,t,c,1] + fe[u,v,t,c,2] = fe[u,v,t,c,3];
+subject to flowConsV3{t in 1..ub,c in 0..k-1, (u,v) in E}:
+	fe[t,c,1,u,v] + fe[t,c,2,u,v] = fe[t,c,3,u,v];
 
-subject to flowConsV4{(u,v) in E, t in 1..ub,c in 0..k-1}:
-	fe[u,v,t,c,3] = fe[u,v,t,c,4] + fe[u,v,t,c,5];
+subject to flowConsV4{t in 1..ub,c in 0..k-1, (u,v) in E}:
+	fe[t,c,3,u,v] = fe[t,c,4,u,v] + fe[t,c,5,u,v];
 
-subject to flowConsV56{v in V, t in 1..ub,c in 0..k-1}:
-	 sum{u in N[v]: u < v} fe[u,v,t,c,5] + sum{u in N[v]: v < u} fe[v,u,t,c,4] = fv[v,t,c];
+subject to flowConsV56{ t in 1..ub,c in 0..k-1, v in V}:
+	 sum{u in N[v]: u < v } fe[t,c,5,u,v] + sum{u in N[v]: v < u } fe[t,c,4,v,u] = fv[t,c,v];
 
-subject to capacityV {u in V, t in 0..ub}:
-	sum{c in 0..k-1} fv[u,t,c] <= 1;
+#subject to capacityV {c1 in 0..k-1, c2 in c1+1..k-1,t in 0..ub, u in V: u in ReachV[c1,t] and u in ReachV[c2,t]}:
+#	fv[t,c1,u] + fv[t,c2,u] <= 1;
+
+#subject to capacityE {c1 in 0..k-1, c2 in c1+1..k-1, t in 1..ub, p in Pos,(u,v) in E}:
+#	fe[t,c1,p,u,v] + fe[t,c2,p,u,v] <= 1;
+
+subject to capacityV {t in 0..ub, u in V}:
+	sum{c in 0..k-1} fv[t,c,u] <= 1;
 
 subject to capacityE {(u,v) in E, t in 1..ub, p in Pos}:
-	sum{c in 0..k-1} fe[u,v,t,c,p] <= 1;
+	sum{c in 0..k-1} fe[t,c,p,u,v] <= 1;

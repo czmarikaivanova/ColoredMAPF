@@ -2,13 +2,13 @@ option solver "/home/marika/software/AMPL/cplex";	# path to used solver (cplex)
 option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution processFlow
 option eexit -99999; 					# supress bailing after xxx warnings
 
-set FILENAMES := {"empty-16-16.map"};# , "random-32-32-20.map"};#, "random-64-64-20.map", "room-32-32-4.map", "warehouse-10-20-10-2-1.map"};
+#set FILENAMES := {"empty-16-16.map"};# , "random-32-32-20.map"};#, "random-64-64-20.map", "room-32-32-4.map", "warehouse-10-20-10-2-1.map"};
 
-#set FILENAMES := {"test.map"};
+set FILENAMES := {"test.map"};
 set INSTANCES{FILENAMES};
-#let INSTANCES["test.map"] := {"test.scen"};
+let INSTANCES["test.map"] := {"test.scen"};
 #let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-1.scen"};#,"empty-16-16-random-2.scen","empty-16-16-random-3.scen","empty-16-16-random-4.scen","empty-16-16-random-5.scen"};
-let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-4.scen"};#,"empty-16-16-random-5.scen"};
+#let INSTANCES["empty-16-16.map"] := {"empty-16-16-random-4.scen"};#,"empty-16-16-random-5.scen"};
 
 #let INSTANCES["random-32-32-20.map"] := {"random-32-32-20-random-1.scen","random-32-32-20-random-2.scen","random-32-32-20-random-3.scen","random-32-32-20-random-4.scen","random-32-32-20-random-5.scen"};
 
@@ -24,7 +24,7 @@ set KS := {5};
 
 param height;
 param width;
-param map{0..height-1, 0..width-1} binary;
+param map{0..height-1, 0..width-1} integer;
 param maxAgentsInInstance;
 param allagents{0..maxAgentsInInstance-1};
 param allgoals{0..maxAgentsInInstance-1};
@@ -35,12 +35,14 @@ param gy;
 param tlim default 600;		# time limit for the solver
 param iterCnt default 0;	# number of iteration in matching ub algorithm
 param currTlim default 3600;	# cummulate _solve_elapsed_time for each iteration of decision model
-
+param layerNodeCnt;
 param objlog symbolic := "./logs/objlog.txt";	# objective function value log file
 param timelog symbolic := "./logs/timelog.txt"; # _solve_elapsed_time log file
+param eid default 1;
 
 
-model "models/CMAPF-multiflow.mod";
+model "models/CMAPF-mcf.mod";
+set ProcessedE within Arcs default {};
 
 printf 's\t',ctime() >> (objlog);
 printf 's\t',ctime() >> (timelog);
@@ -53,7 +55,11 @@ for {fname in FILENAMES} {
 	for {i in 0..height-1} {
 		for {j in 0..width-1} {
 			read map[i,j] < (fname);
-			if map[i,j] = 0 then let V := V union {i * width + j}; # create node only if point in map is 0 
+			if map[i,j] > 0 then let map[i,j] := -1; # if there is an obstacle, put -1
+			if map[i,j] = 0 then {
+				let map[i,j] := card(V);         # if there is a node set to the node ID
+				let V := V union {card(V)};      # insert new node to V
+			}
 		}
 	}
 	display height;
@@ -62,39 +68,41 @@ for {fname in FILENAMES} {
 	let E := {};
 	for {i in 0..height-1} {
 		for {j in 0..width-1} {
-			if map[i,j] = 0 then {
-				if i < height - 1 then {
-					if map[i+1,j] = 0 then {
-						let E := E union {(i * width+j,(i+1)*width+j)};		
+			if map[i,j] >= 0  then { # if there is a node
+				if j < width - 1 then {			# if there is an adjacent node
+					if map[i,j+1] >= 0 then {
+						let E := E union {(map[i,j],map[i,j+1])};		
 					}
 				}
-				if j < width - 1 then {
-					if map[i,j+1] = 0 then {
-						let E := E union {(i * width+j,i*width+j+1)};		
+				if i < height - 1 then {
+					if map[i+1,j] >= 0  then { 	# if there is an adjacent node
+						let E := E union {(map[i,j],map[i+1,j])};		
 					}
 				}
 			}
 		}
 	}
-	display V;
-	display E;
-	#display maxL;
-	#display VF;
-	#display AF;
+	let cardV := card(V);
+	let cardE := card(E);
+	let layerNodeCnt := 2*(cardV + cardE);
+
+	display maxL;
 
 	for {instname in INSTANCES[fname]} {
 		read maxAgentsInInstance < (instname);
 		reset data allagents;
 		for {i in 0..maxAgentsInInstance-1 }{ 			# store all agents and goals that possibly will be in this instance
 				read sx, sy, gx, gy < (instname);
-				let allagents[i] := sy * width + sx;
-				let allgoals[i] := gy * width + gx;
+				let allagents[i] := map[sy,sx];
+				let allgoals[i] := map[gy,gx];
+				printf "Adding agent: %d at %d %d\n",map[sx,sy], sx, sy;
+				printf "Adding goal: %d at %d %d\n",map[gx,gy], gx,gy;
 		}
 		for {teamCount in KS} {
 			let k := teamCount;
 			reset data Teams;
 			reset data Goals;
-			display teamCount;;
+
 
 			for {j in 0..k-1} {				# initially put one agent into each team
 				let Teams[j] := {};
@@ -107,80 +115,131 @@ for {fname in FILENAMES} {
 				for {i in 0..k-1} {
 					let Teams[i] := Teams[i] union {allagents[agentCount + i]};
 					let Goals[i] := Goals[i] union {allgoals[agentCount + i]};
+					
 				}
 				display Teams;
 				display Goals;
-				let ReachE[0,0] := {};
-				for {i in 0..k-1} {
-					let Reachable[i,0] := Teams[i];
-					let ReachableR[i,0] := Goals[i];
-					let ReachV[i,0] := {};
-					for {j in 1..ubLimit} {
-						let Reachable[i,j] := {};
-						let ReachableR[i,j] := {};
-						let ReachV[i,j] := {};
-						let ReachE[i,j] := {};
-					}
+				let Reachable[0] := Agents;
+				let ReachableR[0] := union {c in 0..k-1} Goals[c];
+				let ReachV[0] := {};
+				let ReachE[0] := {};
+				for {j in 1..ubLimit} {
+					let Reachable[j] := {};
+					let ReachableR[j] := {};
+					let ReachV[j] := {};
+					let ReachE[j] := {};
 				}
-
 				let currTlim := tlim;
 				for {i in lb..ubLimit} {						# iterate from lower to upper bound
 				        let ub := i;
 					printf "Current iteration: %d\nTime limit: %d\n",i,currTlim;
 					for {ii in 0..k-1} {
-						let Reachable[ii,ub] := Reachable[ii,ub-1];
-						let ReachableR[ii,ub] := ReachableR[ii,ub-1];
-						#if ub > 1 then let ReachE[ii,ub] := ReachE[ii,ub-1];
-						for {u in Reachable[ii,ub-1]} {
-							let Reachable[ii,ub]:= Reachable[ii,ub] union N[u];
-						#	let ReachE[ii,ub]:= ReachE[ii,ub] union {union{v in N[u]} {(u,v)}};
-						}	
-						for {u in ReachableR[ii,ub-1]} {
-							let ReachableR[ii,ub]:= ReachableR[ii,ub] union N[u];
-						}	
+						let GoalsF[ii] := {};  # Every time changing
 					}
-					for {ii in 0..k-1} { # construct ReachV
-						for {jj in 0..ub} {
-							let ReachV[ii,jj] := Reachable[ii,jj] intersect ReachableR[ii,ub-jj];
-						}	
-					}
+					let AF := {};  # Every time changing
+					let VF := {};  # Every time changing
+					let Reachable[ub] := Reachable[ub-1];
+					let ReachableR[ub] := ReachableR[ub-1];
+					for {u in Reachable[ub-1]} { # bottom up
+						let Reachable[ub]:= Reachable[ub] union N[u];
+					}	
+					for {u in ReachableR[ub-1]} { # up bottom
+						let ReachableR[ub]:= ReachableR[ub] union N[u];
+					}	
+					for {jj in 0..ub} { # intersect both directions
+						let ReachV[jj] := Reachable[jj] intersect ReachableR[ub-jj];
+					}	
 
 					for {ii in 0..k-1} {
 						for {jj in 1..ub} { # construct ReachE
-							for {u in ReachV[ii,jj-1]} {
-								for {v in ReachV[ii,jj]} {
+							for {u in ReachV[jj-1]} {
+								for {v in ReachV[jj]} {
 									if (u,v) in Arcs then {
-										let ReachE[ii,jj] := ReachE[ii,jj] union { (u,v) };
+										let ReachE[jj] := ReachE[jj] union {(u,v)};
 									}
 								}
 							}
 						}	
 					}
-					if card(union{c in 0..k-1} ReachV[c,ub]) < card(union{c in 0..k-1} Goals[c]) then { # if no proper intersection empty both ReachV and ReachE
+					if card(ReachV[ub]) < card(union {c in 0..k-1}Goals[c]) then { # if no proper intersection empty both ReachV and ReachE
 						printf "empty intersection, time limit %d is insufficient.",ub;
-						for {ii in 0..k-1} {
-							for {jj in 0..ub} {
-								let ReachV[ii,jj] := {};
-								let ReachE[ii,jj] := {};
-							}
+						for {jj in 0..ub} { # TODO: is it necessary to clear??
+							let ReachV[jj] := {};
+							let ReachE[jj] := {};
 						}
 						continue;
 					}
+					# Once here, we need to generate the sets VF and AF
+					for {jj in 1..ub} {
+						for {u in ReachV[jj-1]} { # construct VF from nodes previous layer 
+							let VF := VF union {(jj-1)*layerNodeCnt+u} union {jj*layerNodeCnt-cardV+u};
+							let AF := AF union {((jj-1)*layerNodeCnt+u,jj*layerNodeCnt-cardV+u)};
+						}
+						for {u in ReachV[jj]} { # construct VF from nodes previous layer 
+							let VF := VF union {jj*layerNodeCnt-cardV+u};
+						}	
+						if jj > 1 then { # if not the first layer, connect with previous
+							for {u in ReachV[jj-1]} {
+								let AF := AF union {((jj-1)*layerNodeCnt-cardV+u,(jj-1)*layerNodeCnt+u)};
+							}
+						}
+						let eid := 0;
+
+						let ProcessedE := {};
+						for {(u,v) in ReachE[jj]} { # construct VF from edges
+							if (u,v) not in ProcessedE then {
+								let ProcessedE := ProcessedE union {(u,v)};
+								let VF := VF union {(jj-1)*layerNodeCnt+cardV+eid} union {(jj-1)*layerNodeCnt+cardV+cardE+eid};   # nodes in mid 
+								let AF := AF union {((jj-1)*layerNodeCnt+u,(jj-1)*layerNodeCnt+cardV+eid)}  # input to mid 1
+									     union {((jj-1)*layerNodeCnt+cardV+eid,(jj-1)*layerNodeCnt+cardV+cardE+eid)} # mid to mid
+									     union {((jj-1)*layerNodeCnt+cardV+cardE+eid,jj*layerNodeCnt-cardV+u )} # mid to output 1
+									     union {((jj-1)*layerNodeCnt+cardV+cardE+eid,jj*layerNodeCnt-cardV+v )}; # mid to ouptu 2
+								if (v,u) in ReachE[jj] then {
+									let AF := AF union {((jj-1)*layerNodeCnt+v,(jj-1)*layerNodeCnt+cardV+eid)}; # input to mid 2
+									let ProcessedE := ProcessedE union {(v,u)};
+								}
+								let eid := eid + 1;
+							}
+						}
+					#	for {(u,v) in ReachE[jj]} { # construct AF from edges
+					#		display u,v;
+					#		display eid;
+					#		printf "Adding edges:\n %d\t%d\n %d\t%d\n %d\t%d\n %d\t%d\n %d\t%d\n",
+					#			(jj-1)*layerNodeCnt+u,(jj-1)*layerNodeCnt+cardV+eid,
+					#			(jj-1)*layerNodeCnt+v,(jj-1)*layerNodeCnt+cardV+eid,
+					#			(jj-1)*layerNodeCnt+cardV+eid,(jj-1)*layerNodeCnt+cardV+cardE+eid,
+					#			(jj-1)*layerNodeCnt+cardV+cardE+eid,(jj)*layerNodeCnt-cardV+u,
+					#			(jj-1)*layerNodeCnt+cardV+cardE+eid,(jj)*layerNodeCnt-cardV+v;
+					#		let AF := AF union {((jj-1)*layerNodeCnt+u,(jj-1)*layerNodeCnt+cardV+eid)}  # input to mid 1
+					#			     union {((jj-1)*layerNodeCnt+v,(jj-1)*layerNodeCnt+cardV+eid)} # input to mid 2
+					#			     union {((jj-1)*layerNodeCnt+cardV+eid,(jj-1)*layerNodeCnt+cardV+cardE+eid)} # mid to mid
+					#			     union {((jj-1)*layerNodeCnt+cardV+cardE+eid,(jj)*layerNodeCnt-cardV+u)} # mid to output 1 
+					#			     union {((jj-1)*layerNodeCnt+cardV+cardE+eid,(jj)*layerNodeCnt-cardV+v)} # mid to output 2 
+					#			   ;
+					#		if jj > 1 then {  # if we are not in the first iteration we need to connect the previous layer
+					#			let AF := AF union {((jj-1)*layerNodeCnt-cardV+u,(jj-1)*layerNodeCnt+u)} union {((jj-1)*layerNodeCnt-cardV+v,(jj-1)*layerNodeCnt+v)};
+					#		}
+					#		let eid := eid+1;
+					#		display AF;
+					#		printf "\t\t\t edge iteration done\n";
+					#	}
+					#	printf "\t\t\t All edges from current layer added\n";
+					}
+					for {ii in 0..k-1,g in Goals[ii]} {
+						let GoalsF[ii] := GoalsF[ii] union {ub*layerNodeCnt-cardV+g};
+					}
+					display GoalsF;
 			
 					option cplex_options ('timelimit ' & currTlim);			# set time limit for the following solve command
 					option cplex_options 'lowercutoff 10';
 					option cplex_options 'absmipgap 0.9999999';
-					option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution processFlow
-#option times 1;
-#option gentimes 1;
-#option show_stats 1;
+					#option cplex_options 'mipdisplay 2 mipinterval 1';	# what should be displayed during solution processFlow
 					printf "------------------------- SOLVING :";
 					
 				        solve;
 					printf "------------------------- DONE:     ";
 					
 					let currTlim := currTlim - _solve_elapsed_time;
-					#option show_stats 1; 
 					
 				        if solve_result = 'solved' then { 	# a solution is found
 						# if a solution is found, but objective is not n-s, then the solution is in fact infeasible!
@@ -226,113 +285,4 @@ for {fname in FILENAMES} {
 			}
 		}
 	}
-
-
-#	printf 'filename: %s\n', fname; 
-#	printf '========================\n';
-#        printf '%s\t', fname >> (objlog);
-#        printf '%s\t', fname >> (timelog);
-#
-#	# startof loading data --------------------------------------
-#	let V := {};
-#	let E := {};
-#	read cardV, cardE, k, {i in 0 .. k-1 } cardsA[i] < (fname);
-#	for{i in 1..cardV} {
-#		read v1 < (fname);  	# read an edge from a textfile
-#		let V := V union {v1};
-#	}
-#	display cardV;
-#	display cardsA;
-#	display V;
-#	for{i in 1..cardE} {
-#		read v1,v2 < (fname);  	# read an edge from a textfile
-#		let E := E union {(min(v1,v2),max(v1,v2))};
-#	}
-#	display E;
-#	for {i in 0 .. k-1} {
-#		let Teams[i] := {};
-#		for {j in  0 .. cardsA[i] - 1} {
-#			read aj < (fname);
-#			let Teams[i] := Teams[i] union {aj};
-#		}
-#		let Goals[i] := {};
-#		for {j in  0 .. cardsA[i] - 1} {
-#			read gj < (fname);
-#			let Goals[i] := Goals[i] union {gj};
-#		}
-#	}
-#	display V;
-#	display E;
-#	display Agents;
-#	display Teams;
-#	display Goals;
-#	
-#	# end of loading data --------------------------------------
-#
-#	#printf '------------------------\n';
-#	#printf 'model: min time\n';
-#	#printf '------------------------\n';
-#	##option cplex_options ('timelimit ' & tlim);	# set time limit for the following solve command
-#	#solve;
-#	#printf '%d\t',ceil(minTime) >> (objlog);
-#	#printf '%4.2f\t', _solve_time  >> (timelog);
-#	#
-#        #display solve_result;
-#	# Start of iterative procedure --------------------------------------	
-#	for {integerFlag in 1..1} {				# this model is once solved as a lp relaxation (for finding lower bound) and then as an ip
-#		if integerFlag = 1 then {
-#			drop VInoMoveIfNoNeigh
-#		}
-#		printf '------------------------\n';
-#		printf 'model: max informed, integrality relaxed: %d\n', (if integerFlag=0 then 1 else 0);
-#		printf '------------------------\n';
-#		let currTlim := tlim;
-#		for {i in lb+1..ubLimit} {						# iterate from lower to upper bound
-#			display lb;
-#			display i;
-#		        let ub := i;
-#			option relax_integrality (if integerFlag = 0 then 1 else 0);	# set if ip or lp
-#			option cplex_options ('timelimit ' & currTlim);		# set time limit for the following solve command
-#			#option cplex_options ('absmipgap 0 lowercutoff ' & j);
-#
-#		        solve;
-#			
-#			let currTlim := currTlim - _solve_time;
-#			#option show_stats 1; 
-#			
-#		        if solve_result = 'solved' then { 	# a solution is found
-#				# if a solution is found, but objective is not n-s, then the solution is in fact infeasible!
-#				if round(maxCaptured,2) = card(Agents) then {
-#					printf '%4.2f\t', tlim - currTlim >> (timelog);
-#					printf '%2.0f\t', i >> (objlog);
-#		        	        printf 'optimal solution found, k goals captured. Makespan: %d\n',i;
-#					display x;
-##					if integerFlag = 0 then let lb := round(maxCaptured,2)-1;
-#		        	        break;
-#				}
-#		        }
-#			if solve_result = 'infeasible' then {	# the instance has no feasible solution
-#				if i = ubLimit-1 then {		# if we are in the last iteration before the upper bound, the solution is indeed the ub.
-#					printf '%4.2f\t',  tlim - currTlim  >> (timelog);
-#					printf '%2.0f\t', ub >> (objlog);
-#					printf 'infeasible solution for iteration %d, but upper bound %d can now be used',i,ub;
-#		                	break;
-#				}
-#				else {
-#		        		printf 'infeasible for deadline k = %d\n',i;
-#				}
-#			}
-#			# if we got here, it means that we exceeded the time limit without finding the solution
-#			 if solve_result = 'limit' or currTlim < 0 then {
-#				printf '%4.2f\t',  tlim - currTlim  >> (timelog);
-#				printf '%2.0f\t', i >> (objlog);
-#		                printf 'time limit exceeded. best value found (lb): %d\n',i;
-#		                break;
-#		        }
-#		}
-#	}
 }
-#
-#printf '\n' >> (timelog);
-#printf '\n' >> (objlog);
-#
